@@ -16,10 +16,10 @@ class food_class(BaseModel):
 
 class food_component(BaseModel):
     id : int
-    calorie : int
-    protein : int
-    fat : int
-    carbohydrate : int
-    fiber : int
-    calcium : int
-    salt : int
+    calorie: float
+    protein: float
+    fat: float
+    carbohydrate: float
+    fiber: float
+    calcium: float
+    salt: float

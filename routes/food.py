@@ -11,8 +11,8 @@ food_router = APIRouter(
 class MealPlanRequest(BaseModel):
     food_class: str
     food_mainIngre: Optional[str] = None
-    food_calorie: Optional[int] = None
-    food_salt: Optional[int] = None
+    food_calorie: Optional[float] = None
+    food_salt: Optional[float] = None
 
 class MealPlanResponse(BaseModel):
     food_id: int
