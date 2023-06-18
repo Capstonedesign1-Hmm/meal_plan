@@ -1,86 +1,129 @@
-from fastapi import APIRouter, HTTPException, status, Body
-from models.food import food, food_class, food_component
-from typing import List, Optional
-from pydantic import BaseModel
-from itertools import combinations
+from fastapi import APIRouter, HTTPException, status
+from models.food import Food, FoodClass, FoodComponent, MealPlanRequest, MealPlanResponse
+from typing import List
+from databases import Database
+from sqlalchemy import create_engine, MetaData, Table, select, Column, Integer, String, Float, func
+from sqlalchemy.sql.expression import cast
+from fastapi import FastAPI
 
-food_router = APIRouter(
-    tags=["food"],
-)
+DATABASE_URL = "postgresql://admin:hmm12345@database-1.cynzq75zj9kj.us-east-1.rds.amazonaws.com/hmmDB"
+database = Database(DATABASE_URL)
+metadata = MetaData()
+engine = create_engine(DATABASE_URL)
 
-class MealPlanRequest(BaseModel):
-    food_class: str
-    food_mainIngre: Optional[str] = None
-    food_calorie: Optional[float] = None
-    food_salt: Optional[float] = None
+# Define tables
+foods = Table("foods", metadata, autoload_with=engine)
+food_classes = Table("food_classes", metadata, autoload_with=engine)
+food_components = Table("food_components", metadata, autoload_with=engine)
 
-class MealPlanResponse(BaseModel):
-    food_id: int
-    food_name: str
-    food_image: str
+app = FastAPI()
 
-food_dict = {}
+@app.on_event("startup")
+async def startup():
+    await database.connect()
 
-# 사용자에게 이미 전송된 조합을 추적
-sent_combinations = set()
-
-# 가능한 모든 식단 조합을 저장
-meal_combinations = []
+@app.on_event("shutdown")
+async def shutdown():
+    await database.disconnect()
 
 food_router = APIRouter(
     tags=["food"]
 )
 
-@food_router.post("/make_meal", response_model=List[MealPlanResponse]) #한번에 하나씩만 넘기기
+@food_router.post("/make_meal", response_model=List[MealPlanResponse]) 
 async def make_meal(meal_plan: MealPlanRequest) -> List[MealPlanResponse]:
     selected_foods = []
     food_class = meal_plan.food_class
     food_mainIngre = meal_plan.food_mainIngre
     food_calorie = meal_plan.food_calorie
     food_salt = meal_plan.food_salt
-    meal_combinations.clear()
-    sent_combinations.clear()
 
-    for food_id, food in food_dict.items():
-        if food.food_class == food_class:
-            if food_mainIngre is not None and food_mainIngre not in food.food_mainIngre:
-                continue
-            if food_calorie is not None and food.calorie > food_calorie:
-                continue
-            if food_salt is not None and food.salt > food_salt:
-                continue
+    # Food class and main ingredient condition
+    if food_mainIngre is not None:
+        query = select([foods]).where((foods.c.food_type == food_class) & (foods.c.food_mainIngre.contains(food_mainIngre)))
+    else:
+        query = select([foods]).where(foods.c.food_type == food_class)
 
-            selected_foods.append(MealPlanResponse(food_name=food.name, food_image=food.food_image))
+    results = await database.fetch_all(query)
 
-    meal_combinations.extend(combinations(selected_foods, 3))
+    # Get side dish or soup
+    for result in results:
+        if result["food_type"] not in ["반찬", "국"]:
+            continue
+        query = select([food_components]).where(food_components.c.id == result["id"])
+        food_component = await database.fetch_one(query)
+        if food_component is None:
+            continue
+        if food_calorie is not None and food_component["calorie"] > food_calorie:
+            continue
+        if food_salt is not None and food_component["salt"] > food_salt:
+            continue
+        selected_foods.append(MealPlanResponse(food_id=result["id"], food_name=result["name"], food_image=result["food_image"]))
+        food_calorie -= food_component["calorie"]
+        food_salt -= food_component["salt"]
+        break  # We only need one side dish or soup
 
-    return await send_meals()
+    # Get rice dish
+    for result in results:
+        if result["food_type"] != "밥":
+            continue
+        query = select([food_components]).where(food_components.c.id == result["id"])
+        food_component = await database.fetch_one(query)
+        if food_component is None:
+            continue
+        if food_calorie is not None and food_component["calorie"] > food_calorie:
+            continue
+        if food_salt is not None and food_component["salt"] > food_salt:
+            continue
+        selected_foods.append(MealPlanResponse(food_id=result["id"], food_name=result["name"], food_image=result["food_image"]))
+        food_calorie -= food_component["calorie"]
+        food_salt -= food_component["salt"]
+        break  # We only need one rice dish
 
-async def send_meals() -> List[MealPlanResponse]:
-    for combination in meal_combinations:
-        if combination not in sent_combinations:
-            sent_combinations.add(combination)
-            return list(combination)
-    return []
+    # Get another dish
+    for result in results:
+        if result["food_type"] == "밥":
+            continue
+        query = select([food_components]).where(food_components.c.id == result["id"])
+        food_component = await database.fetch_one(query)
+        if food_component is None:
+            continue
+        if food_calorie is not None and food_component["calorie"] > food_calorie:
+            continue
+        if food_salt is not None and food_component["salt"] > food_salt:
+            continue
+        selected_foods.append(MealPlanResponse(food_id=result["id"], food_name=result["name"], food_image=result["food_image"]))
+        break  # We only need one more dish
 
-@food_router.post("/reset_meal", response_model=List[MealPlanResponse])
-async def reset_meal() -> List[MealPlanResponse]:
-    return await send_meals()
+    if not selected_foods:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No foods found")
+
+    return selected_foods
+
 
 @food_router.get("/search_food/{food_name}", response_model=dict)
 async def search_food(food_name: str) -> dict:
-    #try:
-        for food_id, food_item in food_dict.items():
-            if food_item.name == food_name:
-                food_component = await fetch_food_component(food_id)
-                return {
-                    "food": food_item.dict(),
-                    "food_component": food_component.dict(),
-                }
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food not found")
-    #except DatabaseError:
-        #raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Database error")
+    query = select([foods]).where(func.lower(foods.c.name) == func.lower(food_name))
+    result = await database.fetch_one(query)
 
-async def fetch_food_component(food_id: int) -> food_component:
-    # 데이터베이스나 다른 데이터 소스에서 food_component를 가져옴
-    return food_component(id=food_id, calorie=200, protein=10, fat=5, carbohydrate=30, fiber=2, calcium=100, salt=1)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food not found")
+
+    query = select([food_components]).where(food_components.c.id == result["id"])
+    food_component_result = await database.fetch_one(query)
+
+    if food_component_result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food component not found")
+
+    return {
+        "food": {
+            "id": result["id"],
+            "name": result["name"],
+            "food_type": result["food_type"],
+            "food_mainIngre": result["food_mainIngre"],
+            "food_ingredient": result["food_ingredient"],
+            "food_image": result["food_image"],
+            "youtubelink": result["youtubelink"],
+        },
+        "food_component": dict(food_component_result),
+    }

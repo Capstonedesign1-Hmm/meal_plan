@@ -1,6 +1,5 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
-from models.food import food
 
 class User(BaseModel):
     email : EmailStr
